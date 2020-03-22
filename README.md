@@ -1,0 +1,1 @@
+Code written while following the book "Hands On Microservices in Rust" from Packt Publishing.
