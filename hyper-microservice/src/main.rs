@@ -1,12 +1,13 @@
 use futures::{future, Future};
 use hyper::service::service_fn;
 use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};
+use lazy_static::lazy_static;
+use regex::Regex;
 use slab::Slab;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-const USER_PATH: &str = "/user/";
 const INDEX: &str = r#"
 <!DOCTYPE html>
 <html lang="en">
@@ -20,6 +21,20 @@ const INDEX: &str = r#"
 </body>
 </html>
 "#;
+
+// Types used for a makeshift database of users
+type UserId = u64;
+// Empty for simplicity, would normally have fields and require serialization
+// for db interaction/REST responses
+struct UserData;
+// Slab seems to be a mix of a hash map and a vector
+type UserDb = Arc<Mutex<Slab<UserData>>>;
+
+lazy_static! {
+    static ref INDEX_PATH: Regex = Regex::new("^/(index\\.html?)?$").unwrap();
+    static ref USER_PATH: Regex = Regex::new("^/user/((?P<user_id>\\d+?)/?)?$").unwrap();
+    static ref USERS_PATH: Regex = Regex::new("^/users/?$").unwrap();
+}
 
 fn main() {
     // Set up server address
@@ -43,36 +58,47 @@ fn main() {
     hyper::rt::run(server);
 }
 
-// Types used for a makeshift database of users
-type UserId = u64;
-// Empty for simplicity, would normally have fields and require serialization
-// for db interaction/REST responses
-struct UserData;
-// Slab seems to be a mix of a hash map and a vector
-type UserDb = Arc<Mutex<Slab<UserData>>>;
-
 /// Provides functionality to handle HTTP requests to this server.
 fn microservice_handler(
     req: Request<Body>,
     user_db: &UserDb,
 ) -> impl Future<Item = Response<Body>, Error = Error> {
     // Match on request method and path
-    let response = match (req.method(), req.uri().path()) {
-        // GET for root path: return simple html landing page
-        (&Method::GET, "/") => Response::new(INDEX.into()),
+    let response = {
+        let method = req.method();
+        let path = req.uri().path();
+        // Lock mutex for full scope of response
+        let mut users = user_db.lock().unwrap();
 
-        // Paths related to user actions
-        (method, path) if path.starts_with(USER_PATH) => {
-            // Extract user id
-            let user_id = path
-                .trim_left_matches(USER_PATH) // remove "/user/"
-                .parse::<UserId>() // get the number as UserId
-                .ok() // convert the result to an option
-                .map(|x| x as usize); // convert to usize for Slab (ids are usize)
+        // Root path: return simple html landing page
+        if INDEX_PATH.is_match(path) {
+            if method == &Method::GET {
+                Response::new(INDEX.into())
+            } else {
+                response_with_code(StatusCode::METHOD_NOT_ALLOWED)
+            }
 
-            // Lock mutex for full scope of response
-            let mut users = user_db.lock().unwrap();
+        // All users path
+        } else if USERS_PATH.is_match(path) {
+            if method == &Method::GET {
+                let list = users
+                    .iter()
+                    .map(|(id, _)| id.to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                Response::new(list.into())
+            } else {
+                response_with_code(StatusCode::METHOD_NOT_ALLOWED)
+            }
 
+        // User REST Requests
+        } else if let Some(cap) = USER_PATH.captures(path) {
+            let user_id = cap.name("user_id").and_then(|m| {
+                m.as_str()
+                    .parse::<UserId>() // get the number as UserId
+                    .ok() // convert the result to an option
+                    .map(|x| x as usize) // convert to usize for Slab (ids are usize)
+            });
             // Inner match on methods
             match (method, user_id) {
                 /* POST */
@@ -81,10 +107,8 @@ fn microservice_handler(
                     let id = users.insert(UserData);
                     Response::new(id.to_string().into())
                 }
-
                 // Disallow client to give a user id
                 (&Method::POST, Some(_)) => response_with_code(StatusCode::BAD_REQUEST),
-
                 /* GET */
                 // Get a user with a given id
                 (&Method::GET, Some(id)) => {
@@ -94,7 +118,6 @@ fn microservice_handler(
                         response_with_code(StatusCode::NOT_FOUND)
                     }
                 }
-
                 /* PUT */
                 // Update a user with a given id
                 (&Method::PUT, Some(id)) => {
@@ -106,7 +129,6 @@ fn microservice_handler(
                         response_with_code(StatusCode::NOT_FOUND)
                     }
                 }
-
                 /* DELETE */
                 // Remove a selected user
                 (&Method::DELETE, Some(id)) => {
@@ -117,15 +139,15 @@ fn microservice_handler(
                         response_with_code(StatusCode::NOT_FOUND)
                     }
                 }
-
-                // Default
+                /* Default */
                 _ => response_with_code(StatusCode::METHOD_NOT_ALLOWED),
             }
-        }
 
-        // Unknown: 404
-        _ => response_with_code(StatusCode::NOT_FOUND),
-    };
+        // Nothing else matched: 404
+        } else {
+            response_with_code(StatusCode::NOT_FOUND)
+        }
+    }; // end response block
     future::ok(response)
 }
 
