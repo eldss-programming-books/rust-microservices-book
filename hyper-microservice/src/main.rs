@@ -1,8 +1,12 @@
 use futures::{future, Future};
 use hyper::service::service_fn;
 use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};
+use slab::Slab;
+use std::fmt;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
+const USER_PATH: &str = "/user/";
 const INDEX: &str = r#"
 <!DOCTYPE html>
 <html lang="en">
@@ -18,11 +22,18 @@ const INDEX: &str = r#"
 "#;
 
 fn main() {
+    // Set up server address
     let addr: SocketAddr = ([127, 0, 0, 1], 8080).into();
     let builder = Server::bind(&addr);
 
+    // Setup user DB
+    let user_db = Arc::new(Mutex::new(Slab::new()));
+
     // Make a server from the builder
-    let server = builder.serve(|| service_fn(microservice_handler));
+    let server = builder.serve(move || {
+        let user_db = user_db.clone();
+        service_fn(move |req| microservice_handler(req, &user_db))
+    });
 
     // Drop any errors for simplicity
     // Maps errors from current type to the drop function
@@ -32,18 +43,104 @@ fn main() {
     hyper::rt::run(server);
 }
 
-fn microservice_handler(req: Request<Body>) -> impl Future<Item = Response<Body>, Error = Error> {
+// Types used for a makeshift database of users
+type UserId = u64;
+// Empty for simplicity, would normally have fields and require serialization
+// for db interaction/REST responses
+struct UserData;
+// Slab seems to be a mix of a hash map and a vector
+type UserDb = Arc<Mutex<Slab<UserData>>>;
+
+/// Provides functionality to handle HTTP requests to this server.
+fn microservice_handler(
+    req: Request<Body>,
+    user_db: &UserDb,
+) -> impl Future<Item = Response<Body>, Error = Error> {
     // Match on request method and path
-    match (req.method(), req.uri().path()) {
+    let response = match (req.method(), req.uri().path()) {
         // GET for root path: return simple html landing page
-        (&Method::GET, "/") => future::ok(Response::new(INDEX.into())),
-        // Unknown: 404
-        _ => {
-            let response = Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::empty())
-                .unwrap();
-            future::ok(response)
+        (&Method::GET, "/") => Response::new(INDEX.into()),
+
+        // Paths related to user actions
+        (method, path) if path.starts_with(USER_PATH) => {
+            // Extract user id
+            let user_id = path
+                .trim_left_matches(USER_PATH) // remove "/user/"
+                .parse::<UserId>() // get the number as UserId
+                .ok() // convert the result to an option
+                .map(|x| x as usize); // convert to usize for Slab (ids are usize)
+
+            // Lock mutex for full scope of response
+            let mut users = user_db.lock().unwrap();
+
+            // Inner match on methods
+            match (method, user_id) {
+                /* POST */
+                // Create new user and return id
+                (&Method::POST, None) => {
+                    let id = users.insert(UserData);
+                    Response::new(id.to_string().into())
+                }
+
+                // Disallow client to give a user id
+                (&Method::POST, Some(_)) => response_with_code(StatusCode::BAD_REQUEST),
+
+                /* GET */
+                // Get a user with a given id
+                (&Method::GET, Some(id)) => {
+                    if let Some(data) = users.get(id) {
+                        Response::new(data.to_string().into())
+                    } else {
+                        response_with_code(StatusCode::NOT_FOUND)
+                    }
+                }
+
+                /* PUT */
+                // Update a user with a given id
+                (&Method::PUT, Some(id)) => {
+                    if let Some(user) = users.get_mut(id) {
+                        // Access and replace
+                        *user = UserData; // would have data in a real server
+                        response_with_code(StatusCode::OK)
+                    } else {
+                        response_with_code(StatusCode::NOT_FOUND)
+                    }
+                }
+
+                /* DELETE */
+                // Remove a selected user
+                (&Method::DELETE, Some(id)) => {
+                    if users.contains(id) {
+                        users.remove(id);
+                        response_with_code(StatusCode::OK)
+                    } else {
+                        response_with_code(StatusCode::NOT_FOUND)
+                    }
+                }
+
+                // Default
+                _ => response_with_code(StatusCode::METHOD_NOT_ALLOWED),
+            }
         }
+
+        // Unknown: 404
+        _ => response_with_code(StatusCode::NOT_FOUND),
+    };
+    future::ok(response)
+}
+
+/// Creates simple HTTP responses with the given status code.
+fn response_with_code(status_code: StatusCode) -> Response<Body> {
+    Response::builder()
+        .status(status_code)
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// Allow UserData to be represented as a String
+impl fmt::Display for UserData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Since the struct is empty, we don't show anything
+        f.write_str("{}")
     }
 }
