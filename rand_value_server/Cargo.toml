@@ -9,4 +9,6 @@ description = "An example server to demonstrate logging and using configurations
 
 [dependencies]
 hyper = "0.12"
+log = "0.4"
+pretty_env_logger = "0.2"
 rand = "0.5"
