@@ -3,6 +3,7 @@ name = "rand_value_server"
 version = "0.1.0"
 authors = ["Evan <EvanLDouglass@gmail.com>"]
 edition = "2018"
+description = "An example server to demonstrate logging and using configurations"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
