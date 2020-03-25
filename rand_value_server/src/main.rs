@@ -1,15 +1,23 @@
+use dotenv::dotenv;
 use hyper::rt::Future;
 use hyper::service::service_fn_ok;
 use hyper::{Body, Response, Server};
 use log::{debug, info, trace};
+use std::env;
+use std::net::SocketAddr;
 
 fn main() {
+    dotenv().ok();
     pretty_env_logger::init();
     info!("Rand Microservice - v0.1.0");
     trace!("Starting...");
-    let addr = ([127, 0, 0, 1], 8080);
+    // Get the address from an environment variable or default to localhost
+    let addr: SocketAddr = env::var("ADDRESS")
+        .unwrap_or(String::from("127.0.0.1:8080"))
+        .parse()
+        .expect("can't parse ADDRESS variable");
     debug!("Trying to bind server to address: {:?}", addr);
-    let builder = Server::bind(&addr.into());
+    let builder = Server::bind(&addr);
     trace!("Creating service handler...");
     let server = builder.serve(|| {
         service_fn_ok(|req| {
@@ -27,6 +35,7 @@ fn main() {
     // ex: RUST_LOG=rand_value=trace,warn
     // this sets the log filter level to trace for all targets
     // (crates) with the 'rand_value' prefix and to warn for all
-    // other targets.
+    // other targets. Can also use a .env file without the target
+    // specification.
     hyper::rt::run(server);
 }
