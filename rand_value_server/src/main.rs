@@ -3,9 +3,17 @@ use dotenv::dotenv;
 use hyper::rt::Future;
 use hyper::service::service_fn_ok;
 use hyper::{Body, Response, Server};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
+use serde_derive::Deserialize;
 use std::env;
+use std::fs::File;
+use std::io::{self, Read};
 use std::net::SocketAddr;
+
+#[derive(Deserialize)]
+struct Config {
+    address: SocketAddr,
+}
 
 fn main() {
     // Enable use of .env file in this program
@@ -31,18 +39,40 @@ fn main() {
         .subcommand(SubCommand::with_name("key").about("generates a secret key for cookies"))
         .get_matches();
 
+    // Gets info from a toml config file
+    let config = File::open("microservice.toml")
+        .and_then(|mut file| {
+            let mut buffer = String::new();
+            file.read_to_string(&mut buffer)?;
+            Ok(buffer)
+        })
+        .and_then(|buffer| {
+            toml::from_str::<Config>(&buffer)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+        })
+        .map_err(|err| {
+            warn!("Can't read config file: {}", err);
+        })
+        .ok();
+
     info!("Rand Microservice - v0.1.0");
     trace!("Starting...");
 
     // Get the address from an environment variable or default to localhost
-    let localhost = "127.0.0.1:8080";
+    let localhost = ([127, 0, 0, 1], 8080);
     let addr: SocketAddr = matches
+        // Prioritize cmd line args
         .value_of("address")
         .map(|s| s.to_string())
+        // If none given, try env variable
         .or(env::var("ADDRESS").ok())
-        .unwrap_or_else(|| localhost.into())
-        .parse()
-        .expect("can't parse ADDRESS variable");
+        .and_then(|addr| addr.parse().ok())
+        // If none given, try config file
+        .or(config.map(|config| config.address))
+        // Default value
+        .or_else(|| Some(localhost.into()))
+        // At this point we are guaranteed a value
+        .unwrap();
 
     debug!("Trying to bind server to address: {:?}", addr);
     let builder = Server::bind(&addr);
