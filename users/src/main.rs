@@ -2,15 +2,20 @@ use clap::{
     crate_authors, crate_description, crate_name, crate_version, App, AppSettings, Arg, SubCommand,
 };
 use postgres::{Client, Error, NoTls};
+use r2d2_postgres::PostgresConnectionManager;
+use rayon::prelude::*;
+use serde_derive::Deserialize;
+use std::io;
 
 // subcommands
 const CMD_CREATE: &str = "create";
 const CMD_ADD: &str = "add";
 const CMD_LIST: &str = "list";
+const CMD_IMPORT: &str = "import";
 
 const DEFAULT_CONN: &str = "postgres://postgres:password@localhost:5432";
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<(), failure::Error> {
     // Define commandline args/commands
     let matches = App::new(crate_name!())
         .version(crate_version!())
@@ -43,12 +48,16 @@ fn main() -> Result<(), Error> {
                 ),
         )
         .subcommand(SubCommand::with_name(CMD_LIST).about("list users in the table"))
+        .subcommand(SubCommand::with_name(CMD_IMPORT).about("import users from csv"))
         .get_matches();
 
     // Get db connection string
     let addr = matches.value_of("database").unwrap_or(DEFAULT_CONN);
-    // Establish connection
-    let mut conn = Client::connect(addr, NoTls)?;
+
+    // Establish connection pool
+    let manager = PostgresConnectionManager::new(addr.parse().unwrap(), NoTls);
+    let pool = r2d2::Pool::new(manager)?;
+    let mut conn = pool.get()?;
 
     // Execute actions
     match matches.subcommand() {
@@ -56,15 +65,32 @@ fn main() -> Result<(), Error> {
             create_table(&mut conn)?;
         }
         (CMD_ADD, Some(matches)) => {
-            let name = matches.value_of("NAME").unwrap();
-            let email = matches.value_of("EMAIL").unwrap();
-            create_user(&mut conn, name, email)?;
+            let user = User {
+                name: matches.value_of("NAME").unwrap().to_owned(),
+                email: matches.value_of("EMAIL").unwrap().to_owned(),
+            };
+            create_user(&mut conn, &user)?;
         }
         (CMD_LIST, _) => {
             let list = list_users(&mut conn)?;
-            for (name, email) in list {
+            for User { name, email } in list {
                 println!("Name: {:20} Email: {:20}", name, email);
             }
+        }
+        (CMD_IMPORT, _) => {
+            let mut rdr = csv::Reader::from_reader(io::stdin());
+            let mut users: Vec<User> = Vec::new();
+            for user in rdr.deserialize() {
+                users.push(user?);
+            }
+            users
+                .par_iter()
+                .map(|user| -> Result<(), failure::Error> {
+                    let mut conn = pool.get()?;
+                    create_user(&mut conn, &user)?;
+                    Ok(())
+                })
+                .for_each(drop);
         }
         _ => {
             matches.usage();
@@ -72,6 +98,12 @@ fn main() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[derive(Deserialize, Debug)]
+struct User {
+    name: String,
+    email: String,
 }
 
 fn create_table(conn: &mut Client) -> Result<(), Error> {
@@ -86,15 +118,15 @@ fn create_table(conn: &mut Client) -> Result<(), Error> {
     .map(drop)
 }
 
-fn create_user(conn: &mut Client, name: &str, email: &str) -> Result<(), Error> {
+fn create_user(conn: &mut Client, user: &User) -> Result<(), Error> {
     conn.execute(
         "INSERT INTO users (name, email) VALUES ($1, $2)",
-        &[&name, &email],
+        &[&user.name, &user.email],
     )
     .map(drop)
 }
 
-fn list_users(conn: &mut Client) -> Result<Vec<(String, String)>, Error> {
+fn list_users(conn: &mut Client) -> Result<Vec<User>, Error> {
     let res = conn
         .query(
             "SELECT name, email
@@ -102,7 +134,10 @@ fn list_users(conn: &mut Client) -> Result<Vec<(String, String)>, Error> {
             &[],
         )?
         .into_iter()
-        .map(|row| (row.get("name"), row.get("email")))
+        .map(|row| User {
+            name: row.get("name"),
+            email: row.get("email"),
+        })
         .collect();
     Ok(res)
 }
