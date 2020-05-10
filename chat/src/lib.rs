@@ -112,6 +112,27 @@ impl Api {
             .get_result(&self.conn)
             .map_err(Error::from)
     }
+
+    /// Add a message from the given user to the given channel with the given content/text
+    pub fn add_message(&self, channel_id: Id, user_id: Id, text: &str) -> Result<Message, Error> {
+        let timestamp = Utc::now().naive_utc();
+        insert_into(messages::table)
+            .values((
+                messages::timestamp.eq(timestamp),
+                messages::channel_id.eq(channel_id),
+                messages::user_id.eq(user_id),
+                messages::text.eq(text),
+            ))
+            .returning((
+                messages::id,
+                messages::timestamp,
+                messages::channel_id,
+                messages::user_id,
+                messages::text,
+            ))
+            .get_result(&self.conn)
+            .map_err(Error::from)
+    }
 }
 
 #[cfg(test)]
