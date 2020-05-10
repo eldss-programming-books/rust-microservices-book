@@ -145,8 +145,28 @@ impl Api {
 
 #[cfg(test)]
 mod tests {
+    use super::Api;
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn create_users() {
+        let api = Api::connect().unwrap();
+
+        // Create users
+        let user1 = api.register_user("user1@example.com").unwrap();
+        let user2 = api.register_user("user2@example.com").unwrap();
+
+        // Create channel and make public
+        let channel = api.create_channel(user1.id, "My Channel", false).unwrap();
+        api.publish_channel(channel.id).unwrap();
+
+        // Add user2 to channel
+        api.add_member(channel.id, user2.id).unwrap();
+
+        // Send some messages
+        let message = api.add_message(channel.id, user1.id, "Welcome").unwrap();
+        api.add_message(channel.id, user2.id, "Hi!").unwrap();
+
+        // remove the first message
+        api.delete_message(message.id).unwrap();
     }
 }
