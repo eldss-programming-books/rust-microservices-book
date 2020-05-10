@@ -133,6 +133,14 @@ impl Api {
             .get_result(&self.conn)
             .map_err(Error::from)
     }
+
+    /// Remove a message from a channel
+    pub fn delete_message(&self, message_id: Id) -> Result<(), Error> {
+        diesel::delete(messages::table)
+            .filter(messages::id.eq(message_id))
+            .execute(&self.conn)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
