@@ -96,6 +96,22 @@ impl Api {
             Err(format_err!("channel not found"))
         }
     }
+
+    /// Adds a user as a member to a channel
+    pub fn add_member(&self, channel_id: Id, user_id: Id) -> Result<Membership, Error> {
+        insert_into(memberships::table)
+            .values((
+                memberships::channel_id.eq(channel_id),
+                memberships::user_id.eq(user_id),
+            ))
+            .returning((
+                memberships::id,
+                memberships::channel_id,
+                memberships::user_id,
+            ))
+            .get_result(&self.conn)
+            .map_err(Error::from)
+    }
 }
 
 #[cfg(test)]
