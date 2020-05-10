@@ -3,8 +3,11 @@ extern crate diesel;
 #[macro_use]
 extern crate serde_derive;
 
-use crate::models::{Channel, Id, Membership, Message, User};
-use crate::schema::{channels, memberships, messages, users};
+mod models;
+mod schema;
+use models::{Channel, Id, Membership, Message, User};
+use schema::{channels, memberships, messages, users};
+
 use chrono::Utc;
 use diesel::{
     insert_into, Connection, ExpressionMethods, OptionalExtension, PgConnection, QueryDsl,
@@ -13,8 +16,28 @@ use diesel::{
 use failure::{format_err, Error};
 use std::env;
 
-mod models;
-mod schema;
+pub struct Api {
+    conn: PgConnection,
+}
+
+impl Api {
+    /// Establish DB connection
+    pub fn connect() -> Result<Self, Error> {
+        let default_url = "postgres://postgres:password@localhost:5432".to_string();
+        let database_url = env::var("DATABASE_URL").unwrap_or(default_url);
+        let conn = PgConnection::establish(&database_url)?;
+        Ok(Self { conn })
+    }
+
+    /// Register a new user
+    pub fn register_user(&self, email: &str) -> Result<User, Error> {
+        insert_into(users::table)
+            .values(users::email.eq(email))
+            .returning((users::id, users::email))
+            .get_result(&self.conn)
+            .map_err(Error::from)
+    }
+}
 
 #[cfg(test)]
 mod tests {
