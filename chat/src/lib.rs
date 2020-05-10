@@ -70,6 +70,32 @@ impl Api {
             Ok(channel)
         })
     }
+
+    /// Make a given channel public
+    pub fn publish_channel(&self, channel_id: Id) -> Result<(), Error> {
+        let channel = channels::table
+            .filter(channels::id.eq(channel_id))
+            .select((
+                channels::id,
+                channels::user_id,
+                channels::title,
+                channels::is_public,
+                channels::created_at,
+                channels::updated_at,
+            ))
+            .first::<Channel>(&self.conn)
+            .optional()
+            .map_err(Error::from)?;
+
+        if let Some(channel) = channel {
+            diesel::update(&channel)
+                .set(channels::is_public.eq(true))
+                .execute(&self.conn)?;
+            Ok(())
+        } else {
+            Err(format_err!("channel not found"))
+        }
+    }
 }
 
 #[cfg(test)]
